@@ -71,10 +71,27 @@ export function StandardDetailPage() {
   const [showPreviewModal, setShowPreviewModal] = useState(false);
 
   // Mapping tab filters
-  const [mappingFilterSystem, setMappingFilterSystem] = useState<string>('all');
-  const [mappingFilterTable, setMappingFilterTable] = useState<string>('all');
-  const [mappingFilterStatus, setMappingFilterStatus] = useState<MappingStatus | 'all'>('all');
-  const [mappingSearchKeyword, setMappingSearchKeyword] = useState('');
+  const [mappingFilterSystem, setMappingFilterSystem] = useState<string>(
+    (location.state?.returnState?.mappingFilterSystem as string) ||
+    (location.state?.mappingFilterSystem as string) || 'all'
+  );
+  const [mappingFilterTable, setMappingFilterTable] = useState<string>(
+    (location.state?.returnState?.mappingFilterTable as string) ||
+    (location.state?.mappingFilterTable as string) || 'all'
+  );
+  const [mappingFilterStatus, setMappingFilterStatus] = useState<MappingStatus | 'all'>(
+    ((location.state?.returnState?.mappingFilterStatus as MappingStatus) ||
+    (location.state?.mappingFilterStatus as MappingStatus)) || 'all'
+  );
+  const [mappingSearchKeyword, setMappingSearchKeyword] = useState(
+    (location.state?.returnState?.mappingSearchKeyword as string) ||
+    (location.state?.mappingSearchKeyword as string) || ''
+  );
+
+  // Attachment filters
+  const [attFilterType, setAttFilterType] = useState<string>('all');
+  const [attFilterTime, setAttFilterTime] = useState<string>('all');
+  const [attSearchKeyword, setAttSearchKeyword] = useState('');
 
   const [formData, setFormData] = useState<DataStandard>(() => {
     if (standard) {
@@ -153,6 +170,38 @@ export function StandardDetailPage() {
     const tables = new Set(filtered.map((m) => m.tableName));
     return Array.from(tables);
   }, [mappings, mappingFilterSystem]);
+
+  const attachmentTypeOptions = useMemo(() => {
+    const types = new Set<string>();
+    formData.attachments.forEach((a) => {
+      types.add(getFileTypeLabel(a.mimeType));
+    });
+    return Array.from(types);
+  }, [formData.attachments]);
+
+  const filteredAttachments = useMemo(() => {
+    let result = [...formData.attachments];
+    if (attFilterType !== 'all') {
+      result = result.filter((a) => getFileTypeLabel(a.mimeType) === attFilterType);
+    }
+    if (attFilterTime !== 'all') {
+      const now = new Date();
+      const cutoff = new Date();
+      if (attFilterTime === '7d') cutoff.setDate(now.getDate() - 7);
+      else if (attFilterTime === '30d') cutoff.setDate(now.getDate() - 30);
+      else if (attFilterTime === '90d') cutoff.setDate(now.getDate() - 90);
+      result = result.filter((a) => new Date(a.uploadedAt) >= cutoff);
+    }
+    if (attSearchKeyword) {
+      const kw = attSearchKeyword.toLowerCase();
+      result = result.filter(
+        (a) =>
+          a.name.toLowerCase().includes(kw) ||
+          (a.description && a.description.toLowerCase().includes(kw))
+      );
+    }
+    return result;
+  }, [formData.attachments, attFilterType, attFilterTime, attSearchKeyword]);
 
   const dataTypes: { value: DataType; label: string }[] = [
     { value: 'string', label: '字符串 (string)' },
@@ -402,6 +451,57 @@ export function StandardDetailPage() {
       {/* Content */}
       <div className="p-6">
         <div className="max-w-4xl mx-auto">
+          {/* Context Navigation Panel - visible when entering from mapping */}
+          {(entryContext || mappingFrom) && !isNew && (
+            <div className="mb-6 bg-gradient-to-r from-cyan-50 to-violet-50 rounded-xl border border-cyan-100 p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-cyan-100 flex items-center justify-center">
+                    <ExternalLink className="w-4 h-4 text-cyan-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-gray-800">从映射管理进入</p>
+                    <p className="text-xs text-gray-500">当前标准关联了 {mappings.length} 个字段映射、{formData.attachments.length} 份资料</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setActiveTab('mapping')}
+                    className={cn(
+                      'px-3 py-1.5 text-xs font-medium rounded-lg transition-colors',
+                      activeTab === 'mapping'
+                        ? 'bg-cyan-600 text-white'
+                        : 'bg-white text-cyan-700 border border-cyan-200 hover:bg-cyan-50'
+                    )}
+                  >
+                    映射关系 ({mappings.length})
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('example')}
+                    className={cn(
+                      'px-3 py-1.5 text-xs font-medium rounded-lg transition-colors',
+                      activeTab === 'example'
+                        ? 'bg-cyan-600 text-white'
+                        : 'bg-white text-cyan-700 border border-cyan-200 hover:bg-cyan-50'
+                    )}
+                  >
+                    资料区 ({formData.attachments.length})
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('rectification')}
+                    className={cn(
+                      'px-3 py-1.5 text-xs font-medium rounded-lg transition-colors',
+                      activeTab === 'rectification'
+                        ? 'bg-violet-600 text-white'
+                        : 'bg-white text-violet-700 border border-violet-200 hover:bg-violet-50'
+                    )}
+                  >
+                    整改台账
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           {/* Basic Info Tab */}
           {activeTab === 'basic' && (
             <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
@@ -661,6 +761,11 @@ export function StandardDetailPage() {
                     <label className="block text-sm font-medium text-gray-700">资料区</label>
                     <span className="text-xs text-gray-500">
                       共 {formData.attachments.length} 份资料
+                      {filteredAttachments.length !== formData.attachments.length && (
+                        <span className="ml-1">
+                          (筛选后 {filteredAttachments.length} 份)
+                        </span>
+                      )}
                       {formData.attachments.some((a) => a.source === 'system') && (
                         <span className="ml-1">
                           (系统资料 {formData.attachments.filter((a) => a.source === 'system').length} 份)
@@ -669,11 +774,61 @@ export function StandardDetailPage() {
                     </span>
                   </div>
 
+                  {formData.attachments.length > 3 && (
+                    <div className="flex flex-wrap gap-2 mb-3 p-3 bg-gray-50 rounded-lg">
+                      <Filter className="w-4 h-4 text-gray-400 mt-0.5" />
+                      {attachmentTypeOptions.length > 1 && (
+                        <select
+                          value={attFilterType}
+                          onChange={(e) => setAttFilterType(e.target.value)}
+                          className="px-2 py-1 text-xs border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                        >
+                          <option value="all">全部类型</option>
+                          {attachmentTypeOptions.map((t) => (
+                            <option key={t} value={t}>{t}</option>
+                          ))}
+                        </select>
+                      )}
+                      <select
+                        value={attFilterTime}
+                        onChange={(e) => setAttFilterTime(e.target.value)}
+                        className="px-2 py-1 text-xs border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                      >
+                        <option value="all">全部时间</option>
+                        <option value="7d">近7天</option>
+                        <option value="30d">近30天</option>
+                        <option value="90d">近90天</option>
+                      </select>
+                      <div className="relative flex-1 min-w-[140px]">
+                        <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400" />
+                        <input
+                          type="text"
+                          placeholder="搜索文件名..."
+                          value={attSearchKeyword}
+                          onChange={(e) => setAttSearchKeyword(e.target.value)}
+                          className="w-full pl-7 pr-2 py-1 text-xs border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                        />
+                      </div>
+                      {(attFilterType !== 'all' || attFilterTime !== 'all' || attSearchKeyword) && (
+                        <button
+                          onClick={() => {
+                            setAttFilterType('all');
+                            setAttFilterTime('all');
+                            setAttSearchKeyword('');
+                          }}
+                          className="px-2 py-1 text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md"
+                        >
+                          重置
+                        </button>
+                      )}
+                    </div>
+                  )}
+
                   <div className="space-y-2">
-                    {formData.attachments.length > 0
+                    {filteredAttachments.length > 0
                       ? (() => {
-                          const systemAtts = formData.attachments.filter((a) => a.source === 'system');
-                          const userAtts = formData.attachments.filter(
+                          const systemAtts = filteredAttachments.filter((a) => a.source === 'system');
+                          const userAtts = filteredAttachments.filter(
                             (a) => a.source !== 'system'
                           );
                           const groups = [];
@@ -762,7 +917,13 @@ export function StandardDetailPage() {
                             </div>
                           ));
                         })()
-                      : null}
+                      : (
+                        <div className="text-center py-6">
+                          <p className="text-sm text-gray-400">
+                            {formData.attachments.length > 0 ? '没有符合筛选条件的资料' : '暂无资料'}
+                          </p>
+                        </div>
+                      )}
                   </div>
 
                   {isEditing && (
@@ -926,6 +1087,16 @@ export function StandardDetailPage() {
                                   state: {
                                     highlightMappingId: mapping.id,
                                     filterSystem: mapping.systemName,
+                                    filterTable: mapping.tableName,
+                                    filterStatus: mapping.mappingStatus,
+                                    returnTo: `/standard/${formData.id}`,
+                                    returnState: {
+                                      activeTab: 'mapping',
+                                      mappingFilterSystem,
+                                      mappingFilterTable,
+                                      mappingFilterStatus,
+                                      mappingSearchKeyword,
+                                    },
                                   },
                                 })
                               }

@@ -34,11 +34,14 @@ interface RectificationStore {
   batches: RectificationBatch[];
 
   addBatch: (batch: Omit<RectificationBatch, 'id' | 'createdAt' | 'createdBy'>) => string;
+  updateRecord: (recordId: string, updates: Partial<Pick<RectificationRecord, 'remark' | 'processedBy'>>) => void;
   getBatchesByStandard: (standardId: string) => RectificationBatch[];
   getBatchesBySystem: (systemName: string) => RectificationBatch[];
   getRecordsByStandard: (standardId: string) => RectificationRecord[];
   getRecordsBySystem: (systemName: string) => RectificationRecord[];
+  getRecordsByStatus: (status: RectificationStatus) => RectificationRecord[];
   getAllRecords: () => RectificationRecord[];
+  getAllSystems: () => string[];
   getLatestBatches: (limit?: number) => RectificationBatch[];
   getStatistics: () => {
     totalBatches: number;
@@ -70,6 +73,17 @@ export const useRectificationStore = create<RectificationStore>()(
         }));
 
         return batchId;
+      },
+
+      updateRecord: (recordId, updates) => {
+        set((state) => ({
+          batches: state.batches.map((batch) => ({
+            ...batch,
+            records: batch.records.map((r) =>
+              r.id === recordId ? { ...r, ...updates } : r
+            ),
+          })),
+        }));
       },
 
       getBatchesByStandard: (standardId) => {
@@ -112,6 +126,20 @@ export const useRectificationStore = create<RectificationStore>()(
         );
       },
 
+      getRecordsByStatus: (status) => {
+        const records: RectificationRecord[] = [];
+        get().batches.forEach((b) => {
+          b.records.forEach((r) => {
+            if (r.status === status) {
+              records.push(r);
+            }
+          });
+        });
+        return records.sort(
+          (a, b) => new Date(b.processedAt).getTime() - new Date(a.processedAt).getTime()
+        );
+      },
+
       getAllRecords: () => {
         const records: RectificationRecord[] = [];
         get().batches.forEach((b) => {
@@ -120,6 +148,16 @@ export const useRectificationStore = create<RectificationStore>()(
         return records.sort(
           (a, b) => new Date(b.processedAt).getTime() - new Date(a.processedAt).getTime()
         );
+      },
+
+      getAllSystems: () => {
+        const systems = new Set<string>();
+        get().batches.forEach((b) => {
+          b.records.forEach((r) => {
+            if (r.systemName) systems.add(r.systemName);
+          });
+        });
+        return Array.from(systems).sort();
       },
 
       getLatestBatches: (limit = 10) => {

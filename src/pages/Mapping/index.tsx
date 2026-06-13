@@ -18,6 +18,8 @@ import {
   Square,
   Copy,
   ClipboardList,
+  ArrowLeft,
+  Filter,
 } from 'lucide-react';
 import { systems } from '@/data/mappings';
 import { MappingStatusTag } from '@/components/StatusTag';
@@ -44,8 +46,12 @@ export function MappingPage() {
   const [selectedSystem, setSelectedSystem] = useState(
     (location.state?.filterSystem as string) || '全部系统'
   );
-  const [filterType, setFilterType] = useState<FilterType>('all');
-  const [searchKeyword, setSearchKeyword] = useState('');
+  const [filterType, setFilterType] = useState<FilterType>(
+    (location.state?.filterStatus as FilterType) || 'all'
+  );
+  const [searchKeyword, setSearchKeyword] = useState(
+    (location.state?.filterKeyword as string) || ''
+  );
   const [expandedSections, setExpandedSections] = useState<string[]>([
     'conflict',
     'unmapped',
@@ -481,9 +487,24 @@ ${'='.repeat(60)}
       <div className="bg-white border-b border-gray-100 sticky top-0 z-10">
         <div className="px-6 py-4">
           <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-xl font-semibold text-gray-900">映射管理</h1>
-              <p className="text-sm text-gray-500 mt-0.5">管理系统字段与标准的映射关系</p>
+            <div className="flex items-center gap-3">
+              {location.state?.returnTo && (
+                <button
+                  onClick={() =>
+                    navigate(location.state.returnTo, {
+                      state: location.state.returnState || {},
+                    })
+                  }
+                  className="p-2 -ml-2 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+                  title="返回标准详情"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+              )}
+              <div>
+                <h1 className="text-xl font-semibold text-gray-900">映射管理</h1>
+                <p className="text-sm text-gray-500 mt-0.5">管理系统字段与标准的映射关系</p>
+              </div>
             </div>
             <div className="flex items-center gap-3">
               <button className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">

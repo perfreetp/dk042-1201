@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import {
   FileText,
   ChevronDown,
@@ -10,11 +10,15 @@ import {
   Calendar,
   User,
   Download,
+  Filter,
+  Pencil,
+  Check,
 } from 'lucide-react';
 import {
   useRectificationStore,
   RectificationBatch,
   RectificationRecord,
+  RectificationStatus,
 } from '@/store/useRectificationStore';
 import { cn } from '@/lib/utils';
 import { formatDateTime } from '@/utils/export';
@@ -33,17 +37,66 @@ export function RectificationLedger({
 }: RectificationLedgerProps) {
   const navigate = useNavigate();
   const [expandedBatches, setExpandedBatches] = useState<Set<string>>(new Set());
+  const [filterSystem, setFilterSystem] = useState<string>('all');
+  const [filterStatus, setFilterStatus] = useState<RectificationStatus | 'all'>('all');
+  const [editingRecordId, setEditingRecordId] = useState<string | null>(null);
+  const [editRemark, setEditRemark] = useState('');
+  const [editProcessor, setEditProcessor] = useState('');
 
-  const { getBatchesByStandard, getBatchesBySystem, getLatestBatches } = useRectificationStore();
+  const {
+    getBatchesByStandard,
+    getBatchesBySystem,
+    getLatestBatches,
+    updateRecord,
+    getAllSystems,
+  } = useRectificationStore();
 
-  let batches: RectificationBatch[];
+  let baseBatches: RectificationBatch[];
   if (standardId) {
-    batches = getBatchesByStandard(standardId);
+    baseBatches = getBatchesByStandard(standardId);
   } else if (systemName) {
-    batches = getBatchesBySystem(systemName);
+    baseBatches = getBatchesBySystem(systemName);
   } else {
-    batches = getLatestBatches(20);
+    baseBatches = getLatestBatches(20);
   }
+
+  const availableSystems = useMemo(() => {
+    if (standardId || systemName) {
+      const systems = new Set<string>();
+      baseBatches.forEach((b) =>
+        b.records.forEach((r) => {
+          if (r.systemName) systems.add(r.systemName);
+        })
+      );
+      return Array.from(systems).sort();
+    }
+    return getAllSystems();
+  }, [baseBatches, standardId, systemName, getAllSystems]);
+
+  const filteredBatches = useMemo(() => {
+    if (filterSystem === 'all' && filterStatus === 'all') return baseBatches;
+
+    return baseBatches
+      .map((batch) => {
+        let filteredRecords = [...batch.records];
+        if (filterSystem !== 'all') {
+          filteredRecords = filteredRecords.filter((r) => r.systemName === filterSystem);
+        }
+        if (filterStatus !== 'all') {
+          filteredRecords = filteredRecords.filter((r) => r.status === filterStatus);
+        }
+        if (filteredRecords.length === 0) return null;
+        return {
+          ...batch,
+          records: filteredRecords,
+          totalCount: filteredRecords.length,
+          successCount: filteredRecords.filter((r) => r.status === 'success').length,
+          failedCount: filteredRecords.filter((r) => r.status === 'failed').length,
+          skippedCount: filteredRecords.filter((r) => r.status === 'skipped').length,
+        };
+      })
+      .filter(Boolean) as RectificationBatch[];
+  }, [baseBatches, filterSystem, filterStatus]);
 
   const toggleBatch = (batchId: string) => {
     setExpandedBatches((prev) => {
@@ -55,6 +108,22 @@ export function RectificationLedger({
       }
       return next;
     });
+  };
+
+  const startEditRecord = (record: RectificationRecord) => {
+    setEditingRecordId(record.id);
+    setEditRemark(record.remark || '');
+    setEditProcessor(record.processedBy || '');
+  };
+
+  const saveEditRecord = () => {
+    if (editingRecordId) {
+      updateRecord(editingRecordId, {
+        remark: editRemark || undefined,
+        processedBy: editProcessor || '当前用户',
+      });
+      setEditingRecordId(null);
+    }
   };
 
   const statusConfig: Record<string, { label: string; className: string; icon: any }> = {
@@ -76,7 +145,7 @@ export function RectificationLedger({
   };
 
   const exportBatchToCSV = (batch: RectificationBatch) => {
-    const header = '字段名,系统,表,目标标准,状态,相似度,备注,处理时间';
+    const header = '字段名,系统,表,目标标准,状态,相似度,处理人,备注,处理时间';
     const rows = batch.records.map((r: RectificationRecord) =>
       [
         r.fieldName,
@@ -85,6 +154,7 @@ export function RectificationLedger({
         r.standardName,
         statusConfig[r.status]?.label || r.status,
         r.similarity ? `${(r.similarity * 100).toFixed(0)}%` : '',
+        r.processedBy || '',
         r.remark || '',
         formatDateTime(r.processedAt),
       ]
@@ -100,7 +170,9 @@ export function RectificationLedger({
     link.click();
   };
 
-  if (batches.length === 0) {
+  const hasFilters = availableSystems.length > 1 || baseBatches.length > 0;
+
+  if (baseBatches.length === 0) {
     return (
       <div className="text-center py-8">
         <div className="w-12 h-12 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-3">
@@ -116,7 +188,49 @@ export function RectificationLedger({
 
   return (
     <div className={cn('space-y-3', compact && 'space-y-2')}>
-      {batches.map((batch) => {
+      {hasFilters && (
+        <div className="flex flex-wrap gap-2 p-3 bg-gray-50 rounded-lg">
+          <Filter className="w-4 h-4 text-gray-400 mt-0.5" />
+          {availableSystems.length > 1 && (
+            <select
+              value={filterSystem}
+              onChange={(e) => setFilterSystem(e.target.value)}
+              className="px-2 py-1 text-xs border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-violet-500"
+            >
+              <option value="all">全部系统</option>
+              {availableSystems.map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          )}
+          <select
+            value={filterStatus}
+            onChange={(e) => setFilterStatus(e.target.value as RectificationStatus | 'all')}
+            className="px-2 py-1 text-xs border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-violet-500"
+          >
+            <option value="all">全部状态</option>
+            <option value="success">已确认</option>
+            <option value="failed">失败</option>
+            <option value="skipped">跳过</option>
+          </select>
+          {(filterSystem !== 'all' || filterStatus !== 'all') && (
+            <button
+              onClick={() => {
+                setFilterSystem('all');
+                setFilterStatus('all');
+              }}
+              className="px-2 py-1 text-xs text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-md"
+            >
+              重置
+            </button>
+          )}
+          <span className="text-xs text-gray-400 ml-auto">
+            {filteredBatches.length} 个批次
+          </span>
+        </div>
+      )}
+
+      {filteredBatches.map((batch) => {
         const isExpanded = expandedBatches.has(batch.id);
         return (
           <div
@@ -188,66 +302,121 @@ export function RectificationLedger({
             {isExpanded && (
               <div className="border-t border-gray-100 bg-gray-50/50 p-4">
                 <div className="space-y-2">
-                  {batch.records.map((record, idx) => {
+                  {batch.records.map((record) => {
                     const cfg = statusConfig[record.status];
                     const StatusIcon = cfg.icon;
+                    const isEditing = editingRecordId === record.id;
                     return (
                       <div
-                        key={idx}
-                        className="flex items-center gap-3 p-3 bg-white rounded-lg border border-gray-100"
+                        key={record.id}
+                        className={cn(
+                          'p-3 bg-white rounded-lg border',
+                          isEditing ? 'border-violet-200 ring-1 ring-violet-100' : 'border-gray-100'
+                        )}
                       >
-                        <StatusIcon
-                          className={cn(
-                            'w-4 h-4 flex-shrink-0',
-                            cfg.className.includes('emerald') && 'text-emerald-500',
-                            cfg.className.includes('red') && 'text-red-500',
-                            cfg.className.includes('gray') && 'text-gray-400'
-                          )}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-mono text-sm text-gray-700">
-                              {record.fieldName}
-                            </span>
-                            <span className="text-xs text-gray-400">→</span>
-                            <button
-                              onClick={() => navigate(`/standard/${record.standardId}`)}
-                              className="text-sm text-cyan-600 hover:text-cyan-700 hover:underline"
-                            >
-                              {record.standardName}
-                            </button>
-                            {record.similarity && (
-                              <span className="text-xs text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
-                                相似度 {(record.similarity * 100).toFixed(0)}%
+                        <div className="flex items-center gap-3">
+                          <StatusIcon
+                            className={cn(
+                              'w-4 h-4 flex-shrink-0',
+                              cfg.className.includes('emerald') && 'text-emerald-500',
+                              cfg.className.includes('red') && 'text-red-500',
+                              cfg.className.includes('gray') && 'text-gray-400'
+                            )}
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-mono text-sm text-gray-700">
+                                {record.fieldName}
                               </span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2 mt-0.5 text-xs text-gray-500">
-                            {record.systemName && <span>{record.systemName}</span>}
-                            {record.tableName && (
-                              <>
-                                <span>·</span>
-                                <span>{record.tableName}</span>
-                              </>
-                            )}
-                            {record.remark && (
-                              <>
-                                <span className="flex items-center gap-1 ml-1 text-amber-600">
-                                  <AlertTriangle className="w-3 h-3" />
-                                  {record.remark}
+                              <span className="text-xs text-gray-400">→</span>
+                              <button
+                                onClick={() => navigate(`/standard/${record.standardId}`, {
+                                  state: { entryContext: 'view-mapping' },
+                                })}
+                                className="text-sm text-cyan-600 hover:text-cyan-700 hover:underline"
+                              >
+                                {record.standardName}
+                              </button>
+                              {record.similarity && (
+                                <span className="text-xs text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
+                                  相似度 {(record.similarity * 100).toFixed(0)}%
                                 </span>
-                              </>
-                            )}
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 mt-0.5 text-xs text-gray-500">
+                              {record.systemName && <span>{record.systemName}</span>}
+                              {record.tableName && (
+                                <>
+                                  <span>·</span>
+                                  <span>{record.tableName}</span>
+                                </>
+                              )}
+                              <span>·</span>
+                              <span className="flex items-center gap-1">
+                                <User className="w-3 h-3" />
+                                {record.processedBy}
+                              </span>
+                            </div>
                           </div>
+                          <span
+                            className={cn(
+                              'text-xs px-2 py-0.5 rounded-full border flex-shrink-0',
+                              cfg.className
+                            )}
+                          >
+                            {cfg.label}
+                          </span>
+                          <button
+                            onClick={() =>
+                              isEditing ? saveEditRecord() : startEditRecord(record)
+                            }
+                            className={cn(
+                              'p-1.5 rounded transition-colors flex-shrink-0',
+                              isEditing
+                                ? 'text-violet-600 hover:bg-violet-50'
+                                : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'
+                            )}
+                            title={isEditing ? '保存' : '编辑备注'}
+                          >
+                            {isEditing ? (
+                              <Check className="w-4 h-4" />
+                            ) : (
+                              <Pencil className="w-3.5 h-3.5" />
+                            )}
+                          </button>
                         </div>
-                        <span
-                          className={cn(
-                            'text-xs px-2 py-0.5 rounded-full border',
-                            cfg.className
-                          )}
-                        >
-                          {cfg.label}
-                        </span>
+
+                        {record.remark && !isEditing && (
+                          <div className="mt-2 ml-7 flex items-center gap-1 text-xs text-amber-600">
+                            <AlertTriangle className="w-3 h-3" />
+                            {record.remark}
+                          </div>
+                        )}
+
+                        {isEditing && (
+                          <div className="mt-3 ml-7 space-y-2">
+                            <div className="flex items-center gap-2">
+                              <label className="text-xs text-gray-500 w-14 flex-shrink-0">处理人</label>
+                              <input
+                                type="text"
+                                value={editProcessor}
+                                onChange={(e) => setEditProcessor(e.target.value)}
+                                className="flex-1 px-2 py-1 text-xs border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-violet-500"
+                                placeholder="处理人姓名"
+                              />
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <label className="text-xs text-gray-500 w-14 flex-shrink-0">备注</label>
+                              <input
+                                type="text"
+                                value={editRemark}
+                                onChange={(e) => setEditRemark(e.target.value)}
+                                className="flex-1 px-2 py-1 text-xs border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-violet-500"
+                                placeholder="补充备注说明"
+                              />
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}

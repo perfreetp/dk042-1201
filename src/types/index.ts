@@ -22,6 +22,8 @@ export interface Attachment {
   size: number;
   uploadedAt: string;
   mimeType: string;
+  source?: 'system' | 'user';
+  description?: string;
 }
 
 export interface DataStandard {

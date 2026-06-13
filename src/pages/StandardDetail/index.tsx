@@ -19,10 +19,12 @@ import {
   Search,
   Filter,
   ExternalLink,
+  ClipboardList,
 } from 'lucide-react';
 import { useStandardStore } from '@/store/useStandardStore';
 import { StatusTag, AuditActionTag } from '@/components/StatusTag';
 import { AttachmentPreviewModal } from '@/components/AttachmentPreviewModal';
+import { RectificationLedger } from '@/components/RectificationLedger';
 import { businessTopics, getAllTopicIds, getTopicName } from '@/data/topics';
 import { getMappingsByStandard } from '@/data/mappings';
 import { getAuditRecordsByStandard } from '@/data/audits';
@@ -40,7 +42,7 @@ import { useMappingStore } from '@/store/useMappingStore';
 import { cn } from '@/lib/utils';
 import { AllowedValue, DataType, DataStandard, FieldMapping, MappingStatus, Attachment } from '@/types';
 
-type TabType = 'basic' | 'values' | 'example' | 'mapping' | 'audit';
+type TabType = 'basic' | 'values' | 'example' | 'mapping' | 'audit' | 'rectification';
 
 export function StandardDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -48,6 +50,7 @@ export function StandardDetailPage() {
   const location = useLocation();
   const isNew = location.pathname === '/standard/new';
   const mappingFrom = location.state?.from === 'mapping';
+  const entryContext = location.state?.entryContext as 'view-mapping' | 'view-materials' | undefined;
 
   const { getStandardById, addStandard, updateStandard, deleteStandard, submitForAudit } =
     useStandardStore();
@@ -57,9 +60,10 @@ export function StandardDetailPage() {
   const standard = isNew ? null : getStandardById(id || '');
   const [isEditing, setIsEditing] = useState(isNew);
   const [activeTab, setActiveTab] = useState<TabType>(() => {
-    if (location.state?.activeTab === 'example') return 'example';
-    if (location.state?.activeTab === 'mapping') return 'mapping';
-    return mappingFrom ? 'mapping' : 'basic';
+    if (location.state?.activeTab === 'example' || entryContext === 'view-materials') return 'example';
+    if (location.state?.activeTab === 'mapping' || entryContext === 'view-mapping' || mappingFrom) return 'mapping';
+    if (location.state?.activeTab === 'rectification') return 'rectification';
+    return 'basic';
   });
   const [showLinkModal, setShowLinkModal] = useState(false);
   const [linkSearchKeyword, setLinkSearchKeyword] = useState('');
@@ -158,12 +162,13 @@ export function StandardDetailPage() {
     { value: 'text', label: '长文本 (text)' },
   ];
 
-  const tabs: { key: TabType; label: string; icon?: string }[] = [
+  const tabs: { key: TabType; label: string; icon?: any }[] = [
     { key: 'basic', label: '基本信息' },
     { key: 'values', label: '取值规范' },
     { key: 'example', label: '示例说明' },
     { key: 'mapping', label: '映射关系' },
     { key: 'audit', label: '审核记录' },
+    { key: 'rectification', label: '整改台账' },
   ];
 
   const handleSave = () => {
@@ -652,60 +657,112 @@ export function StandardDetailPage() {
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-3">附件说明</label>
+                  <div className="flex items-center justify-between mb-3">
+                    <label className="block text-sm font-medium text-gray-700">资料区</label>
+                    <span className="text-xs text-gray-500">
+                      共 {formData.attachments.length} 份资料
+                      {formData.attachments.some((a) => a.source === 'system') && (
+                        <span className="ml-1">
+                          (系统资料 {formData.attachments.filter((a) => a.source === 'system').length} 份)
+                        </span>
+                      )}
+                    </span>
+                  </div>
+
                   <div className="space-y-2">
-                    {formData.attachments.map((att) => (
-                      <div
-                        key={att.id}
-                        className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg hover:bg-gray-100/50 transition-colors group"
-                      >
-                        <div className="w-10 h-10 rounded-lg bg-cyan-100 flex items-center justify-center flex-shrink-0">
-                          {att.mimeType?.startsWith('image/') ? (
-                            <Image className="w-5 h-5 text-cyan-600" />
-                          ) : (
-                            <FileText className="w-5 h-5 text-cyan-600" />
-                          )}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <p className="text-sm font-medium text-gray-800 truncate">{att.name}</p>
-                            <span className="text-xs px-1.5 py-0.5 bg-cyan-50 text-cyan-700 rounded">
-                              {getFileTypeLabel(att.mimeType)}
-                            </span>
-                          </div>
-                          <p className="text-xs text-gray-500">
-                            {formatFileSize(att.size)} · {formatDateTime(att.uploadedAt)}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          {isPreviewSupported(att) && (
-                            <button
-                              onClick={() => handlePreviewAttachment(att)}
-                              className="p-1.5 text-gray-400 hover:text-cyan-600 hover:bg-cyan-50 rounded transition-colors"
-                              title="在线预览"
-                            >
-                              <Eye className="w-4 h-4" />
-                            </button>
-                          )}
-                          <button
-                            onClick={() => handleDownloadAttachment(att.id)}
-                            className="p-1.5 text-gray-400 hover:text-cyan-600 hover:bg-cyan-50 rounded transition-colors"
-                            title="下载"
-                          >
-                            <Download className="w-4 h-4" />
-                          </button>
-                          {isEditing && (
-                            <button
-                              onClick={() => handleDeleteAttachment(att.id)}
-                              className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
-                              title="删除"
-                            >
-                              <X className="w-4 h-4" />
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                    ))}
+                    {formData.attachments.length > 0
+                      ? (() => {
+                          const systemAtts = formData.attachments.filter((a) => a.source === 'system');
+                          const userAtts = formData.attachments.filter(
+                            (a) => a.source !== 'system'
+                          );
+                          const groups = [];
+                          if (systemAtts.length > 0) {
+                            groups.push({ label: '系统资料', items: systemAtts });
+                          }
+                          if (userAtts.length > 0) {
+                            groups.push({ label: '上传资料', items: userAtts });
+                          }
+                          return groups.map((group) => (
+                            <div key={group.label}>
+                              <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2 mt-2">
+                                {group.label}
+                              </p>
+                              <div className="space-y-2">
+                                {group.items.map((att) => (
+                                  <div
+                                    key={att.id}
+                                    className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg hover:bg-gray-100/50 transition-colors group"
+                                  >
+                                    <div className="w-10 h-10 rounded-lg bg-cyan-100 flex items-center justify-center flex-shrink-0">
+                                      {att.mimeType?.startsWith('image/') ? (
+                                        <Image className="w-5 h-5 text-cyan-600" />
+                                      ) : (
+                                        <FileText className="w-5 h-5 text-cyan-600" />
+                                      )}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <p className="text-sm font-medium text-gray-800 truncate">
+                                          {att.name}
+                                        </p>
+                                        <span className="text-xs px-1.5 py-0.5 bg-cyan-50 text-cyan-700 rounded">
+                                          {getFileTypeLabel(att.mimeType)}
+                                        </span>
+                                        {att.source === 'system' && (
+                                          <span className="text-xs px-1.5 py-0.5 bg-violet-50 text-violet-700 rounded">
+                                            系统资料
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="flex items-center gap-2 mt-0.5">
+                                        <p className="text-xs text-gray-500">
+                                          {formatFileSize(att.size)} · {formatDateTime(att.uploadedAt)}
+                                        </p>
+                                        {att.description && (
+                                          <>
+                                            <span className="text-xs text-gray-300">·</span>
+                                            <p className="text-xs text-gray-500 truncate">
+                                              {att.description}
+                                            </p>
+                                          </>
+                                        )}
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                      {isPreviewSupported(att) && (
+                                        <button
+                                          onClick={() => handlePreviewAttachment(att)}
+                                          className="p-1.5 text-gray-400 hover:text-cyan-600 hover:bg-cyan-50 rounded transition-colors"
+                                          title="在线预览"
+                                        >
+                                          <Eye className="w-4 h-4" />
+                                        </button>
+                                      )}
+                                      <button
+                                        onClick={() => handleDownloadAttachment(att.id)}
+                                        className="p-1.5 text-gray-400 hover:text-cyan-600 hover:bg-cyan-50 rounded transition-colors"
+                                        title="下载"
+                                      >
+                                        <Download className="w-4 h-4" />
+                                      </button>
+                                      {isEditing && att.source !== 'system' && (
+                                        <button
+                                          onClick={() => handleDeleteAttachment(att.id)}
+                                          className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                                          title="删除"
+                                        >
+                                          <X className="w-4 h-4" />
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ));
+                        })()
+                      : null}
                   </div>
 
                   {isEditing && (
@@ -713,7 +770,9 @@ export function StandardDetailPage() {
                       <label className="flex flex-col items-center justify-center w-full h-32 border-2 border-dashed border-gray-200 rounded-lg cursor-pointer hover:border-cyan-400 hover:bg-cyan-50/50 transition-all">
                         <Upload className="w-8 h-8 text-gray-400 mb-2" />
                         <p className="text-sm text-gray-500">点击上传或拖拽文件到此处</p>
-                        <p className="text-xs text-gray-400 mt-1">支持 PDF、图片、文本、Word、Excel 格式，可多选，单文件最大 10MB</p>
+                        <p className="text-xs text-gray-400 mt-1">
+                          支持 PDF、图片、文本、Word、Excel 格式，可多选，单文件最大 10MB
+                        </p>
                         <input
                           type="file"
                           className="hidden"
@@ -725,6 +784,26 @@ export function StandardDetailPage() {
                     </div>
                   )}
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* Rectification Tab */}
+          {activeTab === 'rectification' && (
+            <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+              <div className="p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-lg bg-violet-100 flex items-center justify-center">
+                      <ClipboardList className="w-5 h-5 text-violet-600" />
+                    </div>
+                    <div>
+                      <h3 className="text-base font-semibold text-gray-800">整改台账</h3>
+                      <p className="text-xs text-gray-500">该标准相关的批量整改历史记录</p>
+                    </div>
+                  </div>
+                </div>
+                <RectificationLedger standardId={formData.id} />
               </div>
             </div>
           )}

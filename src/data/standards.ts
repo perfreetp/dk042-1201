@@ -16,7 +16,7 @@ export const standards: DataStandard[] = [
     allowedValues: [],
     example: '550e8400-e29b-41d4-a716-446655440000',
     attachments: [
-      { id: 'a1', name: '客户编号规范说明.pdf', size: 245760, uploadedAt: '2024-01-15 10:30:00' },
+      { id: 'a1', name: '客户编号规范说明.pdf', size: 245760, uploadedAt: '2024-01-15 10:30:00', mimeType: 'application/pdf', source: 'system', description: '客户编号编码规则和使用场景说明' },
     ],
     createdBy: '张三',
     createdAt: '2024-01-10 09:00:00',
@@ -122,7 +122,7 @@ export const standards: DataStandard[] = [
     allowedValues: [],
     example: 'ORD2024060100001',
     attachments: [
-      { id: 'a2', name: '订单编号规则说明.docx', size: 128000, uploadedAt: '2024-02-10 09:00:00' },
+      { id: 'a2', name: '订单编号规则说明.docx', size: 128000, uploadedAt: '2024-02-10 09:00:00', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', source: 'system', description: '订单编号前缀和序列号配置说明' },
     ],
     createdBy: '王五',
     createdAt: '2024-01-15 14:00:00',

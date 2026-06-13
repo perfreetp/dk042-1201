@@ -50,6 +50,7 @@ export async function addAttachment(
         size: file.size,
         uploadedAt: new Date().toISOString(),
         mimeType: file.type,
+        source: 'user',
         data: reader.result as string,
       };
 

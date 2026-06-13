@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   Search,
   AlertTriangle,
@@ -17,12 +17,15 @@ import {
   CheckSquare,
   Square,
   Copy,
+  ClipboardList,
 } from 'lucide-react';
 import { systems } from '@/data/mappings';
 import { MappingStatusTag } from '@/components/StatusTag';
 import { AttachmentPreviewModal } from '@/components/AttachmentPreviewModal';
+import { RectificationLedger } from '@/components/RectificationLedger';
 import { useMappingStore } from '@/store/useMappingStore';
 import { useStandardStore } from '@/store/useStandardStore';
+import { useRectificationStore, RectificationRecord, RectificationStatus } from '@/store/useRectificationStore';
 import { batchFindReplacements, MatchResult } from '@/utils/matching';
 import { getAttachments } from '@/utils/attachmentStorage';
 import { cn } from '@/lib/utils';
@@ -37,6 +40,7 @@ export function MappingPage() {
   const { mappings, confirmMapping, getStatistics, getMappingsBySystem, searchMappings } =
     useMappingStore();
   const { standards } = useStandardStore();
+  const { addBatch } = useRectificationStore();
   const [selectedSystem, setSelectedSystem] = useState(
     (location.state?.filterSystem as string) || '全部系统'
   );
@@ -56,11 +60,25 @@ export function MappingPage() {
   const [batchResultSummary, setBatchResultSummary] = useState<{
     success: number;
     failed: number;
-    results: { fieldName: string; standardName: string; status: string; remark?: string }[];
+    skipped: number;
+    results: RectificationRecord[];
   } | null>(null);
   const [previewAttachment, setPreviewAttachment] = useState<Attachment | null>(null);
   const [previewStandardId, setPreviewStandardId] = useState<string>('');
   const [showPreviewModal, setShowPreviewModal] = useState(false);
+  const [highlightMappingId, setHighlightMappingId] = useState<string | null>(
+    (location.state?.highlightMappingId as string) || null
+  );
+  const highlightRef = useRef<HTMLDivElement>(null);
+
+  // Handle auto-scroll to highlighted mapping after render
+  useEffect(() => {
+    if (highlightMappingId && highlightRef.current) {
+      highlightRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const timer = setTimeout(() => setHighlightMappingId(null), 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [highlightMappingId, mappings.length]);
 
   const stats = getStatistics();
   const mappingRate = stats.total > 0 ? ((stats.mapped / stats.total) * 100).toFixed(1) : '0';
@@ -173,46 +191,68 @@ export function MappingPage() {
     if (selectedResults.size === 0) return;
 
     const selectedItems = batchResults.filter((r) => selectedResults.has(r.fieldName));
-    const results: { fieldName: string; standardName: string; status: string; remark?: string }[] = [];
+    const records: RectificationRecord[] = [];
+    const now = new Date().toISOString();
 
     for (const result of selectedItems) {
       const mapping = mappings.find(
         (m) => m.fieldName.toLowerCase() === result.fieldName.toLowerCase() && !m.standardId
       );
 
+      let status: RectificationStatus = 'skipped';
+      let remark: string | undefined;
+
       if (mapping) {
         try {
           confirmMapping(mapping.id, result.standard.id, result.standard.nameCn);
-          results.push({
-            fieldName: result.fieldName,
-            standardName: result.standard.nameCn,
-            status: 'success',
-          });
+          status = 'success';
         } catch (e) {
-          results.push({
-            fieldName: result.fieldName,
-            standardName: result.standard.nameCn,
-            status: 'failed',
-            remark: '处理失败',
-          });
+          status = 'failed';
+          remark = '处理失败';
         }
       } else {
         const existingMapping = mappings.find(
           (m) => m.fieldName.toLowerCase() === result.fieldName.toLowerCase() && m.standardId
         );
-        results.push({
-          fieldName: result.fieldName,
-          standardName: result.standard.nameCn,
-          status: 'skipped',
-          remark: existingMapping ? '该字段已映射到其他标准' : '未找到匹配的字段记录',
-        });
+        remark = existingMapping ? '该字段已映射到其他标准' : '未找到匹配的字段记录';
       }
+
+      records.push({
+        id: 'rec_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+        batchId: '', // will be set after addBatch
+        fieldName: result.fieldName,
+        tableName: mapping?.tableName,
+        systemName: mapping?.systemName,
+        standardId: result.standard.id,
+        standardName: result.standard.nameCn,
+        status,
+        remark,
+        similarity: result.similarity,
+        processedAt: now,
+        processedBy: '当前用户',
+      });
     }
 
-    const success = results.filter((r) => r.status === 'success').length;
-    const failed = results.filter((r) => r.status === 'failed').length;
+    const successCount = records.filter((r) => r.status === 'success').length;
+    const failedCount = records.filter((r) => r.status === 'failed').length;
+    const skippedCount = records.filter((r) => r.status === 'skipped').length;
 
-    setBatchResultSummary({ success, failed, results });
+    // Persist to rectification ledger
+    const batchId = addBatch({
+      name: `批量整改_${new Date().toLocaleDateString('zh-CN')}_${successCount}条`,
+      totalCount: records.length,
+      successCount,
+      failedCount,
+      skippedCount,
+      records: records.map((r) => ({ ...r, batchId })),
+    });
+
+    setBatchResultSummary({
+      success: successCount,
+      failed: failedCount,
+      skipped: skippedCount,
+      results: records,
+    });
     setShowResultModal(true);
     setSelectedResults(new Set());
   };
@@ -225,8 +265,9 @@ export function MappingPage() {
       return `${r.fieldName} → ${r.standardName} | ${statusText}${r.remark ? ' | ' + r.remark : ''}`;
     });
 
+    const skipped = batchResultSummary.skipped ?? 0;
     const header = `批量映射处理结果 (${new Date().toLocaleString()})
-成功: ${batchResultSummary.success} | 失败: ${batchResultSummary.failed} | 总计: ${batchResultSummary.results.length}
+成功: ${batchResultSummary.success} | 失败: ${batchResultSummary.failed} | 跳过: ${skipped} | 总计: ${batchResultSummary.results.length}
 ${'='.repeat(60)}
 `;
     navigator.clipboard.writeText(header + lines.join('\n'));
@@ -236,9 +277,19 @@ ${'='.repeat(60)}
   const exportResultToCSV = () => {
     if (!batchResultSummary) return;
 
-    const header = '字段名,目标标准,状态,备注';
+    const header = '字段名,系统,表,目标标准,状态,相似度,备注';
     const rows = batchResultSummary.results.map((r) =>
-      [r.fieldName, r.standardName, r.status, r.remark || ''].map((s) => `"${s}"`).join(',')
+      [
+        r.fieldName,
+        r.systemName || '',
+        r.tableName || '',
+        r.standardName,
+        r.status,
+        r.similarity ? (r.similarity * 100).toFixed(0) + '%' : '',
+        r.remark || '',
+      ]
+        .map((s) => `"${s}"`)
+        .join(',')
     );
     const csv = [header, ...rows].join('\n');
 
@@ -251,7 +302,7 @@ ${'='.repeat(60)}
 
   const viewStandardFromResult = (result: MatchResult) => {
     navigate(`/standard/${result.standard.id}`, {
-      state: { from: 'mapping' },
+      state: { from: 'mapping', entryContext: 'view-mapping' },
     });
   };
 
@@ -263,7 +314,7 @@ ${'='.repeat(60)}
     }
     // 直接跳转到标准详情页的示例说明标签页
     navigate(`/standard/${standardId}`, {
-      state: { from: 'mapping', activeTab: 'example' },
+      state: { from: 'mapping', entryContext: 'view-materials' },
     });
   };
 
@@ -273,8 +324,18 @@ ${'='.repeat(60)}
     low: { label: '低', className: 'bg-gray-50 text-gray-600 border-gray-200' },
   };
 
-  const MappingCard = ({ mapping }: { mapping: FieldMapping }) => (
-    <div className="bg-white rounded-lg border border-gray-100 p-4 hover:shadow-md transition-all duration-200">
+  const MappingCard = ({ mapping }: { mapping: FieldMapping }) => {
+    const isHighlighted = highlightMappingId === mapping.id;
+    return (
+    <div
+      ref={isHighlighted ? highlightRef : undefined}
+      className={cn(
+        'bg-white rounded-lg border p-4 hover:shadow-md transition-all duration-200',
+        isHighlighted
+          ? 'border-amber-400 shadow-lg shadow-amber-100 ring-2 ring-amber-200/50 animate-pulse'
+          : 'border-gray-100'
+      )}
+    >
       <div className="flex items-start justify-between mb-3">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
@@ -282,6 +343,11 @@ ${'='.repeat(60)}
               {mapping.fieldName}
             </span>
             <MappingStatusTag status={mapping.mappingStatus} />
+            {isHighlighted && (
+              <span className="text-xs px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded">
+                定位到此处
+              </span>
+            )}
           </div>
           <p className="text-xs text-gray-500">
             {mapping.systemName} · {mapping.tableName} · {mapping.fieldType}
@@ -313,7 +379,11 @@ ${'='.repeat(60)}
             <div className="flex-1 min-w-0">
               <p
                 className="text-sm font-medium text-cyan-700 truncate cursor-pointer hover:underline"
-                onClick={() => navigate(`/standard/${mapping.suggestedStandardId}`)}
+                onClick={() =>
+                  navigate(`/standard/${mapping.suggestedStandardId}`, {
+                    state: { from: 'mapping', entryContext: 'view-mapping' },
+                  })
+                }
               >
                 {mapping.suggestedStandardName}
               </p>
@@ -346,17 +416,34 @@ ${'='.repeat(60)}
               <CheckCircle className="w-4 h-4 text-emerald-500" />
               <span className="text-xs text-emerald-600">已映射到标准</span>
             </div>
-            <button
-              onClick={() => navigate(`/standard/${mapping.standardId}`)}
-              className="text-xs text-cyan-600 hover:text-cyan-700"
-            >
-              查看标准 →
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() =>
+                  navigate(`/standard/${mapping.standardId}`, {
+                    state: { from: 'mapping', entryContext: 'view-materials' },
+                  })
+                }
+                className="text-xs text-gray-500 hover:text-violet-600"
+              >
+                看资料
+              </button>
+              <button
+                onClick={() =>
+                  navigate(`/standard/${mapping.standardId}`, {
+                    state: { from: 'mapping', entryContext: 'view-mapping' },
+                  })
+                }
+                className="text-xs text-cyan-600 hover:text-cyan-700"
+              >
+                查看标准 →
+              </button>
+            </div>
           </div>
         </div>
       )}
     </div>
   );
+  };
 
   const SectionHeader = ({
     id,
@@ -639,7 +726,7 @@ ${'='.repeat(60)}
                             <div className="mt-3 flex items-center justify-between">
                               <div className="flex items-center gap-3 text-xs text-gray-500">
                                 <span>数据类型：{result.standard.dataType}</span>
-                                <span>长度：{result.standard.dataLength || '-'}</span>
+                                <span>长度：{result.standard.length || '-'}</span>
                               </div>
                               <div className="flex gap-2">
                                 <button
@@ -855,6 +942,24 @@ ${'='.repeat(60)}
               )}
             </div>
           </div>
+
+          {/* Rectification Ledger */}
+          <div className="mt-6">
+            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-9 h-9 rounded-lg bg-violet-100 flex items-center justify-center">
+                  <ClipboardList className="w-5 h-5 text-violet-600" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="text-base font-semibold text-gray-800">整改台账</h3>
+                  <p className="text-xs text-gray-500">
+                    所有批量整改的历史记录，可按批次追溯处理情况
+                  </p>
+                </div>
+              </div>
+              <RectificationLedger />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -870,7 +975,12 @@ ${'='.repeat(60)}
                   <span className="text-emerald-600 font-medium">{batchResultSummary.success}</span>{' '}
                   条，失败{' '}
                   <span className="text-red-600 font-medium">{batchResultSummary.failed}</span>{' '}
+                  条，跳过{' '}
+                  <span className="text-gray-600 font-medium">{batchResultSummary.skipped || 0}</span>{' '}
                   条
+                </p>
+                <p className="text-xs text-violet-600 mt-1">
+                  已自动记录到整改台账，可在标准详情页或下方查阅
                 </p>
               </div>
               <button

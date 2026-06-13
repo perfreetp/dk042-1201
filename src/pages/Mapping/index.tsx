@@ -12,24 +12,34 @@ import {
   Zap,
   X,
   ArrowRight,
+  Download,
+  FileText,
+  CheckSquare,
+  Square,
+  Copy,
 } from 'lucide-react';
 import { systems } from '@/data/mappings';
 import { MappingStatusTag } from '@/components/StatusTag';
+import { AttachmentPreviewModal } from '@/components/AttachmentPreviewModal';
 import { useMappingStore } from '@/store/useMappingStore';
 import { useStandardStore } from '@/store/useStandardStore';
 import { batchFindReplacements, MatchResult } from '@/utils/matching';
+import { getAttachments } from '@/utils/attachmentStorage';
 import { cn } from '@/lib/utils';
-import { MappingStatus, FieldMapping } from '@/types';
-import { useNavigate } from 'react-router-dom';
+import { MappingStatus, FieldMapping, Attachment } from '@/types';
+import { useNavigate, useLocation } from 'react-router-dom';
 
 type FilterType = 'all' | MappingStatus;
 
 export function MappingPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { mappings, confirmMapping, getStatistics, getMappingsBySystem, searchMappings } =
     useMappingStore();
   const { standards } = useStandardStore();
-  const [selectedSystem, setSelectedSystem] = useState('全部系统');
+  const [selectedSystem, setSelectedSystem] = useState(
+    (location.state?.filterSystem as string) || '全部系统'
+  );
   const [filterType, setFilterType] = useState<FilterType>('all');
   const [searchKeyword, setSearchKeyword] = useState('');
   const [expandedSections, setExpandedSections] = useState<string[]>([
@@ -37,10 +47,20 @@ export function MappingPage() {
     'unmapped',
     'mapped',
   ]);
-  const [showBatchSuggest, setShowBatchSuggest] = useState(false);
+  const [showBatchSuggest, setShowBatchSuggest] = useState(true);
   const [batchInput, setBatchInput] = useState('');
   const [batchResults, setBatchResults] = useState<MatchResult[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
+  const [selectedResults, setSelectedResults] = useState<Set<string>>(new Set());
+  const [showResultModal, setShowResultModal] = useState(false);
+  const [batchResultSummary, setBatchResultSummary] = useState<{
+    success: number;
+    failed: number;
+    results: { fieldName: string; standardName: string; status: string; remark?: string }[];
+  } | null>(null);
+  const [previewAttachment, setPreviewAttachment] = useState<Attachment | null>(null);
+  const [previewStandardId, setPreviewStandardId] = useState<string>('');
+  const [showPreviewModal, setShowPreviewModal] = useState(false);
 
   const stats = getStatistics();
   const mappingRate = stats.total > 0 ? ((stats.mapped / stats.total) * 100).toFixed(1) : '0';
@@ -127,6 +147,124 @@ export function MappingPage() {
     if (mapping) {
       confirmMapping(mapping.id, result.standard.id, result.standard.nameCn);
     }
+  };
+
+  const toggleResultSelection = (fieldName: string) => {
+    setSelectedResults((prev) => {
+      const next = new Set(prev);
+      if (next.has(fieldName)) {
+        next.delete(fieldName);
+      } else {
+        next.add(fieldName);
+      }
+      return next;
+    });
+  };
+
+  const selectAllResults = () => {
+    if (selectedResults.size === batchResults.length) {
+      setSelectedResults(new Set());
+    } else {
+      setSelectedResults(new Set(batchResults.map((r) => r.fieldName)));
+    }
+  };
+
+  const handleBatchConfirm = async () => {
+    if (selectedResults.size === 0) return;
+
+    const selectedItems = batchResults.filter((r) => selectedResults.has(r.fieldName));
+    const results: { fieldName: string; standardName: string; status: string; remark?: string }[] = [];
+
+    for (const result of selectedItems) {
+      const mapping = mappings.find(
+        (m) => m.fieldName.toLowerCase() === result.fieldName.toLowerCase() && !m.standardId
+      );
+
+      if (mapping) {
+        try {
+          confirmMapping(mapping.id, result.standard.id, result.standard.nameCn);
+          results.push({
+            fieldName: result.fieldName,
+            standardName: result.standard.nameCn,
+            status: 'success',
+          });
+        } catch (e) {
+          results.push({
+            fieldName: result.fieldName,
+            standardName: result.standard.nameCn,
+            status: 'failed',
+            remark: '处理失败',
+          });
+        }
+      } else {
+        const existingMapping = mappings.find(
+          (m) => m.fieldName.toLowerCase() === result.fieldName.toLowerCase() && m.standardId
+        );
+        results.push({
+          fieldName: result.fieldName,
+          standardName: result.standard.nameCn,
+          status: 'skipped',
+          remark: existingMapping ? '该字段已映射到其他标准' : '未找到匹配的字段记录',
+        });
+      }
+    }
+
+    const success = results.filter((r) => r.status === 'success').length;
+    const failed = results.filter((r) => r.status === 'failed').length;
+
+    setBatchResultSummary({ success, failed, results });
+    setShowResultModal(true);
+    setSelectedResults(new Set());
+  };
+
+  const copyResultToClipboard = () => {
+    if (!batchResultSummary) return;
+
+    const lines = batchResultSummary.results.map((r) => {
+      const statusText = r.status === 'success' ? '✓ 成功' : r.status === 'skipped' ? '○ 跳过' : '✗ 失败';
+      return `${r.fieldName} → ${r.standardName} | ${statusText}${r.remark ? ' | ' + r.remark : ''}`;
+    });
+
+    const header = `批量映射处理结果 (${new Date().toLocaleString()})
+成功: ${batchResultSummary.success} | 失败: ${batchResultSummary.failed} | 总计: ${batchResultSummary.results.length}
+${'='.repeat(60)}
+`;
+    navigator.clipboard.writeText(header + lines.join('\n'));
+    alert('结果已复制到剪贴板');
+  };
+
+  const exportResultToCSV = () => {
+    if (!batchResultSummary) return;
+
+    const header = '字段名,目标标准,状态,备注';
+    const rows = batchResultSummary.results.map((r) =>
+      [r.fieldName, r.standardName, r.status, r.remark || ''].map((s) => `"${s}"`).join(',')
+    );
+    const csv = [header, ...rows].join('\n');
+
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `批量映射结果_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+  };
+
+  const viewStandardFromResult = (result: MatchResult) => {
+    navigate(`/standard/${result.standard.id}`, {
+      state: { from: 'mapping' },
+    });
+  };
+
+  const viewStandardAttachments = async (standardId: string, standardName: string) => {
+    const atts = getAttachments(standardId);
+    if (atts.length === 0) {
+      alert('该标准暂无附件资料');
+      return;
+    }
+    // 直接跳转到标准详情页的示例说明标签页
+    navigate(`/standard/${standardId}`, {
+      state: { from: 'mapping', activeTab: 'example' },
+    });
   };
 
   const confidenceConfig = {
@@ -405,74 +543,144 @@ export function MappingPage() {
               {/* Results List */}
               {hasSearched && batchResults.length > 0 && (
                 <div className="mt-5 border-t border-gray-100 pt-5">
-                  <h4 className="text-sm font-semibold text-gray-700 mb-4">推荐替换列表</h4>
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-3">
+                      <h4 className="text-sm font-semibold text-gray-700">推荐替换列表</h4>
+                      <button
+                        onClick={selectAllResults}
+                        className="text-xs text-cyan-600 hover:text-cyan-700 flex items-center gap-1"
+                      >
+                        {selectedResults.size === batchResults.length ? (
+                          <>
+                            <CheckSquare className="w-3.5 h-3.5" />
+                            取消全选
+                          </>
+                        ) : (
+                          <>
+                            <Square className="w-3.5 h-3.5" />
+                            全选
+                          </>
+                        )}
+                      </button>
+                      <span className="text-xs text-gray-500">
+                        已选 {selectedResults.size} 项
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          setBatchResults([]);
+                          setHasSearched(false);
+                          setSelectedResults(new Set());
+                        }}
+                        className="text-xs text-gray-500 hover:text-gray-700"
+                      >
+                        清空结果
+                      </button>
+                      {selectedResults.size > 0 && (
+                        <button
+                          onClick={handleBatchConfirm}
+                          className="px-4 py-1.5 text-xs font-medium text-white bg-gradient-to-r from-emerald-500 to-teal-600 rounded-lg hover:from-emerald-600 hover:to-teal-700 transition-all flex items-center gap-1.5"
+                        >
+                          <CheckCircle className="w-3.5 h-3.5" />
+                          批量确认映射 ({selectedResults.size})
+                        </button>
+                      )}
+                    </div>
+                  </div>
                   <div className="space-y-3 max-h-96 overflow-y-auto">
                     {batchResults.map((result, index) => (
                       <div
                         key={index}
-                        className="p-4 bg-gray-50 rounded-lg border border-gray-100 hover:border-violet-200 transition-colors"
+                        className={cn(
+                          'p-4 rounded-lg border transition-colors',
+                          selectedResults.has(result.fieldName)
+                            ? 'bg-violet-50 border-violet-200'
+                            : 'bg-gray-50 border-gray-100 hover:border-violet-200'
+                        )}
                       >
                         <div className="flex items-start gap-4">
-                          <div className="flex items-center gap-3 py-1">
-                            <span className="text-sm font-mono text-gray-700 font-medium">
-                              {result.fieldName}
-                            </span>
-                            <ArrowRight className="w-4 h-4 text-gray-400" />
-                            <span className="text-sm font-medium text-violet-700">
-                              {result.standard.nameCn}
-                            </span>
-                            <span className="text-xs text-gray-500 font-mono">
-                              ({result.standard.nameEn})
-                            </span>
-                          </div>
-                          <div className="flex-1" />
-                          <span
-                            className={cn(
-                              'text-xs px-2 py-1 rounded-full border',
-                              confidenceConfig[result.confidence].className
-                            )}
+                          <button
+                            onClick={() => toggleResultSelection(result.fieldName)}
+                            className="mt-1 flex-shrink-0"
                           >
-                            置信度 {confidenceConfig[result.confidence].label} (
-                            {(result.similarity * 100).toFixed(0)}%)
-                          </span>
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {result.matchReasons.map((reason, i) => (
-                            <span
-                              key={i}
-                              className="text-xs px-2 py-1 bg-white rounded border border-gray-200 text-gray-600"
-                            >
-                              {reason}
-                            </span>
-                          ))}
-                        </div>
-                        <div className="mt-3 flex items-center justify-between">
-                          <div className="flex items-center gap-3 text-xs text-gray-500">
-                            <span>数据类型：{result.standard.dataType}</span>
-                            <span>长度：{result.standard.dataLength || '-'}</span>
-                          </div>
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() =>
-                                navigate(`/standards/${result.standard.id}`)
-                              }
-                              className="text-xs text-cyan-600 hover:text-cyan-700"
-                            >
-                              查看标准
-                            </button>
-                            {mappings.some(
-                              (m) =>
-                                m.fieldName.toLowerCase() ===
-                                  result.fieldName.toLowerCase() &&
-                                !m.standardId
-                            ) && (
-                              <button
-                                onClick={() => handleConfirmBatchMapping(result)}
-                                className="text-xs px-3 py-1 bg-emerald-500 text-white rounded hover:bg-emerald-600"
-                              >
-                                确认映射
-                              </button>
+                            {selectedResults.has(result.fieldName) ? (
+                              <CheckSquare className="w-5 h-5 text-violet-600" />
+                            ) : (
+                              <Square className="w-5 h-5 text-gray-300" />
                             )}
+                          </button>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-3 py-1 flex-wrap">
+                              <span className="text-sm font-mono text-gray-700 font-medium">
+                                {result.fieldName}
+                              </span>
+                              <ArrowRight className="w-4 h-4 text-gray-400" />
+                              <span
+                                className="text-sm font-medium text-violet-700 cursor-pointer hover:underline"
+                                onClick={() => viewStandardFromResult(result)}
+                              >
+                                {result.standard.nameCn}
+                              </span>
+                              <span className="text-xs text-gray-500 font-mono">
+                                ({result.standard.nameEn})
+                              </span>
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {result.matchReasons.map((reason, i) => (
+                                <span
+                                  key={i}
+                                  className="text-xs px-2 py-1 bg-white rounded border border-gray-200 text-gray-600"
+                                >
+                                  {reason}
+                                </span>
+                              ))}
+                            </div>
+                            <div className="mt-3 flex items-center justify-between">
+                              <div className="flex items-center gap-3 text-xs text-gray-500">
+                                <span>数据类型：{result.standard.dataType}</span>
+                                <span>长度：{result.standard.dataLength || '-'}</span>
+                              </div>
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => viewStandardAttachments(result.standard.id, result.standard.nameCn)}
+                                  className="text-xs text-gray-500 hover:text-gray-700 flex items-center gap-1"
+                                >
+                                  <FileText className="w-3.5 h-3.5" />
+                                  查看资料
+                                </button>
+                                <button
+                                  onClick={() => viewStandardFromResult(result)}
+                                  className="text-xs text-cyan-600 hover:text-cyan-700"
+                                >
+                                  查看标准
+                                </button>
+                                {mappings.some(
+                                  (m) =>
+                                    m.fieldName.toLowerCase() ===
+                                      result.fieldName.toLowerCase() &&
+                                    !m.standardId
+                                ) && (
+                                  <button
+                                    onClick={() => handleConfirmBatchMapping(result)}
+                                    className="text-xs px-3 py-1 bg-emerald-500 text-white rounded hover:bg-emerald-600"
+                                  >
+                                    确认映射
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex-shrink-0">
+                            <span
+                              className={cn(
+                                'text-xs px-2 py-1 rounded-full border',
+                                confidenceConfig[result.confidence].className
+                              )}
+                            >
+                              置信度 {confidenceConfig[result.confidence].label} (
+                              {(result.similarity * 100).toFixed(0)}%)
+                            </span>
                           </div>
                         </div>
                       </div>
@@ -649,6 +857,127 @@ export function MappingPage() {
           </div>
         </div>
       </div>
+
+      {/* Batch Result Modal */}
+      {showResultModal && batchResultSummary && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl mx-4 max-h-[80vh] flex flex-col overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">批量处理结果</h3>
+                <p className="text-sm text-gray-500 mt-0.5">
+                  共处理 {batchResultSummary.results.length} 条，成功{' '}
+                  <span className="text-emerald-600 font-medium">{batchResultSummary.success}</span>{' '}
+                  条，失败{' '}
+                  <span className="text-red-600 font-medium">{batchResultSummary.failed}</span>{' '}
+                  条
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setShowResultModal(false);
+                  setBatchResultSummary(null);
+                }}
+                className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="px-6 py-3 border-b border-gray-100 bg-gray-50 flex items-center gap-2">
+              <button
+                onClick={copyResultToClipboard}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                <Copy className="w-4 h-4" />
+                复制结果
+              </button>
+              <button
+                onClick={exportResultToCSV}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                <Download className="w-4 h-4" />
+                导出 CSV
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4">
+              <div className="space-y-2">
+                {batchResultSummary.results.map((item, index) => (
+                  <div
+                    key={index}
+                    className={cn(
+                      'flex items-center gap-3 p-3 rounded-lg',
+                      item.status === 'success'
+                        ? 'bg-emerald-50 border border-emerald-100'
+                        : item.status === 'skipped'
+                        ? 'bg-gray-50 border border-gray-200'
+                        : 'bg-red-50 border border-red-100'
+                    )}
+                  >
+                    <div className="flex-shrink-0">
+                      {item.status === 'success' ? (
+                        <CheckCircle className="w-5 h-5 text-emerald-500" />
+                      ) : item.status === 'skipped' ? (
+                        <MinusCircle className="w-5 h-5 text-gray-400" />
+                      ) : (
+                        <X className="w-5 h-5 text-red-500" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 text-sm">
+                        <span className="font-mono text-gray-700">{item.fieldName}</span>
+                        <ArrowRight className="w-3.5 h-3.5 text-gray-400" />
+                        <span className="font-medium text-gray-800">{item.standardName}</span>
+                      </div>
+                      {item.remark && (
+                        <p className="text-xs text-gray-500 mt-0.5">{item.remark}</p>
+                      )}
+                    </div>
+                    <span
+                      className={cn(
+                        'text-xs px-2 py-0.5 rounded-full font-medium',
+                        item.status === 'success'
+                          ? 'bg-emerald-100 text-emerald-700'
+                          : item.status === 'skipped'
+                          ? 'bg-gray-100 text-gray-600'
+                          : 'bg-red-100 text-red-700'
+                      )}
+                    >
+                      {item.status === 'success' ? '成功' : item.status === 'skipped' ? '跳过' : '失败'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="px-6 py-4 border-t border-gray-100 bg-gray-50 flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  setShowResultModal(false);
+                  setBatchResultSummary(null);
+                }}
+                className="px-4 py-2 text-sm font-medium text-white bg-gradient-to-r from-cyan-500 to-blue-500 rounded-lg hover:from-cyan-600 hover:to-blue-600 transition-all"
+              >
+                完成
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Attachment Preview Modal */}
+      <AttachmentPreviewModal
+        isOpen={showPreviewModal}
+        onClose={() => {
+          setShowPreviewModal(false);
+          setPreviewAttachment(null);
+          setPreviewStandardId('');
+        }}
+        standardId={previewStandardId}
+        attachment={previewAttachment}
+        showStandardLink
+      />
     </div>
   );
 }

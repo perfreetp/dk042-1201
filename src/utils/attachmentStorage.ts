@@ -49,6 +49,7 @@ export async function addAttachment(
         name: file.name,
         size: file.size,
         uploadedAt: new Date().toISOString(),
+        mimeType: file.type,
         data: reader.result as string,
       };
 
@@ -64,6 +65,49 @@ export async function addAttachment(
     reader.onerror = () => reject(new Error('Failed to read file'));
     reader.readAsDataURL(file);
   });
+}
+
+export async function addAttachments(
+  standardId: string,
+  files: FileList | File[]
+): Promise<Attachment[]> {
+  const results: Attachment[] = [];
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    try {
+      const att = await addAttachment(standardId, file);
+      results.push(att);
+    } catch (err) {
+      console.error('Failed to upload file:', file.name, err);
+    }
+  }
+  return results;
+}
+
+export function getPreviewUrl(standardId: string, attachmentId: string): string | null {
+  return getAttachmentData(standardId, attachmentId);
+}
+
+export function isPreviewSupported(attachment: Attachment): boolean {
+  const previewTypes = [
+    'image/',
+    'application/pdf',
+    'text/plain',
+    'text/csv',
+    'text/json',
+    'application/json',
+  ];
+  return previewTypes.some((type) => attachment.mimeType.startsWith(type));
+}
+
+export function getFileTypeLabel(mimeType: string): string {
+  if (mimeType.startsWith('image/')) return '图片';
+  if (mimeType === 'application/pdf') return 'PDF';
+  if (mimeType.startsWith('text/')) return '文本';
+  if (mimeType.includes('excel') || mimeType.includes('spreadsheet')) return 'Excel';
+  if (mimeType.includes('word') || mimeType.includes('document')) return 'Word';
+  if (mimeType.includes('zip') || mimeType.includes('rar') || mimeType.includes('7z')) return '压缩包';
+  return '文件';
 }
 
 export function deleteAttachment(standardId: string, attachmentId: string): void {

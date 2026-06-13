@@ -1,46 +1,75 @@
 import { useState } from 'react';
 import {
   Search,
-  Filter,
   AlertTriangle,
   CheckCircle,
   MinusCircle,
-  ArrowRight,
   Sparkles,
   Upload,
   RefreshCw,
   ChevronDown,
   ChevronUp,
   Zap,
+  X,
+  ArrowRight,
 } from 'lucide-react';
-import { fieldMappings, systems } from '@/data/mappings';
+import { systems } from '@/data/mappings';
 import { MappingStatusTag } from '@/components/StatusTag';
+import { useMappingStore } from '@/store/useMappingStore';
+import { useStandardStore } from '@/store/useStandardStore';
+import { batchFindReplacements, MatchResult } from '@/utils/matching';
 import { cn } from '@/lib/utils';
-import { MappingStatus } from '@/types';
+import { MappingStatus, FieldMapping } from '@/types';
 import { useNavigate } from 'react-router-dom';
 
 type FilterType = 'all' | MappingStatus;
 
 export function MappingPage() {
   const navigate = useNavigate();
+  const { mappings, confirmMapping, getStatistics, getMappingsBySystem, searchMappings } =
+    useMappingStore();
+  const { standards } = useStandardStore();
   const [selectedSystem, setSelectedSystem] = useState('全部系统');
   const [filterType, setFilterType] = useState<FilterType>('all');
   const [searchKeyword, setSearchKeyword] = useState('');
-  const [expandedSections, setExpandedSections] = useState<string[]>(['conflict', 'unmapped', 'mapped']);
+  const [expandedSections, setExpandedSections] = useState<string[]>([
+    'conflict',
+    'unmapped',
+    'mapped',
+  ]);
+  const [showBatchSuggest, setShowBatchSuggest] = useState(false);
+  const [batchInput, setBatchInput] = useState('');
+  const [batchResults, setBatchResults] = useState<MatchResult[]>([]);
+  const [hasSearched, setHasSearched] = useState(false);
 
-  const filteredMappings = fieldMappings.filter((m) => {
-    if (selectedSystem !== '全部系统' && m.systemName !== selectedSystem) return false;
-    if (filterType !== 'all' && m.mappingStatus !== filterType) return false;
+  const stats = getStatistics();
+  const mappingRate = stats.total > 0 ? ((stats.mapped / stats.total) * 100).toFixed(1) : '0';
+
+  const getFilteredMappings = (): FieldMapping[] => {
+    let result = [...mappings];
+
+    if (selectedSystem !== '全部系统') {
+      result = result.filter((m) => m.systemName === selectedSystem);
+    }
+
+    if (filterType !== 'all') {
+      result = result.filter((m) => m.mappingStatus === filterType);
+    }
+
     if (searchKeyword) {
       const keyword = searchKeyword.toLowerCase();
-      return (
-        m.fieldName.toLowerCase().includes(keyword) ||
-        m.tableName.toLowerCase().includes(keyword) ||
-        m.suggestedStandardName?.toLowerCase().includes(keyword)
+      result = result.filter(
+        (m) =>
+          m.fieldName.toLowerCase().includes(keyword) ||
+          m.tableName.toLowerCase().includes(keyword) ||
+          m.suggestedStandardName?.toLowerCase().includes(keyword)
       );
     }
-    return true;
-  });
+
+    return result;
+  };
+
+  const filteredMappings = getFilteredMappings();
 
   const conflictMappings = filteredMappings.filter((m) => m.mappingStatus === 'conflict');
   const unmappedMappings = filteredMappings.filter((m) => m.mappingStatus === 'unmapped');
@@ -58,15 +87,6 @@ export function MappingPage() {
     value: '取值冲突',
   };
 
-  const stats = {
-    total: fieldMappings.length,
-    mapped: fieldMappings.filter((m) => m.mappingStatus === 'mapped').length,
-    conflict: fieldMappings.filter((m) => m.mappingStatus === 'conflict').length,
-    unmapped: fieldMappings.filter((m) => m.mappingStatus === 'unmapped').length,
-  };
-
-  const mappingRate = ((stats.mapped / stats.total) * 100).toFixed(1);
-
   const filters: { value: FilterType; label: string; icon: any; color: string }[] = [
     { value: 'all', label: '全部', icon: MinusCircle, color: 'text-gray-500' },
     { value: 'conflict', label: '冲突', icon: AlertTriangle, color: 'text-red-500' },
@@ -74,18 +94,70 @@ export function MappingPage() {
     { value: 'mapped', label: '已映射', icon: CheckCircle, color: 'text-emerald-500' },
   ];
 
-  const MappingCard = ({ mapping }: { mapping: typeof fieldMappings[0] }) => (
+  const handleConfirmMapping = (mapping: FieldMapping) => {
+    if (mapping.suggestedStandardId && mapping.suggestedStandardName) {
+      confirmMapping(mapping.id, mapping.suggestedStandardId, mapping.suggestedStandardName);
+    }
+  };
+
+  const handleUnlinkMapping = (mappingId: string) => {
+    if (confirm('确定解除该字段的映射关系？')) {
+      useMappingStore.getState().unlinkMapping(mappingId);
+    }
+  };
+
+  const handleBatchSearch = () => {
+    if (!batchInput.trim()) return;
+
+    const fieldNames = batchInput
+      .split(/[\n,，、\s]+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+
+    const publishedStandards = standards.filter((s) => s.status === 'published');
+    const results = batchFindReplacements(fieldNames, publishedStandards);
+    setBatchResults(results);
+    setHasSearched(true);
+  };
+
+  const handleConfirmBatchMapping = (result: MatchResult) => {
+    const mapping = mappings.find(
+      (m) => m.fieldName.toLowerCase() === result.fieldName.toLowerCase() && !m.standardId
+    );
+    if (mapping) {
+      confirmMapping(mapping.id, result.standard.id, result.standard.nameCn);
+    }
+  };
+
+  const confidenceConfig = {
+    high: { label: '高', className: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+    medium: { label: '中', className: 'bg-amber-50 text-amber-700 border-amber-200' },
+    low: { label: '低', className: 'bg-gray-50 text-gray-600 border-gray-200' },
+  };
+
+  const MappingCard = ({ mapping }: { mapping: FieldMapping }) => (
     <div className="bg-white rounded-lg border border-gray-100 p-4 hover:shadow-md transition-all duration-200">
       <div className="flex items-start justify-between mb-3">
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="font-mono text-sm font-medium text-gray-800">{mapping.fieldName}</span>
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <span className="font-mono text-sm font-medium text-gray-800">
+              {mapping.fieldName}
+            </span>
             <MappingStatusTag status={mapping.mappingStatus} />
           </div>
           <p className="text-xs text-gray-500">
             {mapping.systemName} · {mapping.tableName} · {mapping.fieldType}
           </p>
         </div>
+        {mapping.mappingStatus === 'mapped' && (
+          <button
+            onClick={() => handleUnlinkMapping(mapping.id)}
+            className="p-1 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+            title="解除映射"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
       </div>
 
       {mapping.mappingStatus !== 'mapped' && mapping.suggestedStandardName && (
@@ -101,13 +173,22 @@ export function MappingPage() {
           </div>
           <div className="flex items-center gap-2">
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-cyan-700 truncate cursor-pointer hover:underline"
+              <p
+                className="text-sm font-medium text-cyan-700 truncate cursor-pointer hover:underline"
                 onClick={() => navigate(`/standard/${mapping.suggestedStandardId}`)}
               >
                 {mapping.suggestedStandardName}
               </p>
+              {mapping.conflictType && (
+                <p className="text-xs text-gray-400 mt-0.5">
+                  冲突类型：{conflictTypeLabels[mapping.conflictType] || mapping.conflictType}
+                </p>
+              )}
             </div>
-            <button className="px-3 py-1 text-xs font-medium text-white bg-gradient-to-r from-cyan-500 to-blue-500 rounded-md hover:from-cyan-600 hover:to-blue-600 transition-all">
+            <button
+              onClick={() => handleConfirmMapping(mapping)}
+              className="px-3 py-1.5 text-xs font-medium text-white bg-gradient-to-r from-cyan-500 to-blue-500 rounded-md hover:from-cyan-600 hover:to-blue-600 transition-all whitespace-nowrap"
+            >
               确认映射
             </button>
           </div>
@@ -122,9 +203,17 @@ export function MappingPage() {
 
       {mapping.mappingStatus === 'mapped' && mapping.standardId && (
         <div className="mt-3 pt-3 border-t border-gray-50">
-          <div className="flex items-center gap-2 text-xs text-emerald-600">
-            <CheckCircle className="w-3.5 h-3.5" />
-            <span>已映射到标准</span>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <CheckCircle className="w-4 h-4 text-emerald-500" />
+              <span className="text-xs text-emerald-600">已映射到标准</span>
+            </div>
+            <button
+              onClick={() => navigate(`/standard/${mapping.standardId}`)}
+              className="text-xs text-cyan-600 hover:text-cyan-700"
+            >
+              查看标准 →
+            </button>
           </div>
         </div>
       )}
@@ -228,6 +317,173 @@ export function MappingPage() {
           </div>
         </div>
 
+        {/* Batch Suggest Section */}
+        <div className="bg-white rounded-xl border border-gray-100 shadow-sm mb-6 overflow-hidden">
+          <button
+            onClick={() => setShowBatchSuggest(!showBatchSuggest)}
+            className="w-full p-5 flex items-center justify-between hover:bg-gray-50 transition-colors"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center">
+                <Sparkles className="w-5 h-5 text-white" />
+              </div>
+              <div className="text-left">
+                <h3 className="text-sm font-semibold text-gray-800">批量搜索替换建议</h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  输入字段名或关键词，智能推荐对应的标准
+                </p>
+              </div>
+            </div>
+            {showBatchSuggest ? (
+              <ChevronUp className="w-5 h-5 text-gray-400" />
+            ) : (
+              <ChevronDown className="w-5 h-5 text-gray-400" />
+            )}
+          </button>
+
+          {showBatchSuggest && (
+            <div className="border-t border-gray-100 p-5">
+              <div className="flex gap-4">
+                <div className="flex-1">
+                  <label className="text-sm font-medium text-gray-700 mb-2 block">
+                    字段名或关键词
+                    <span className="text-gray-400 font-normal ml-2">
+                      （支持换行、逗号、空格分隔多个）
+                    </span>
+                  </label>
+                  <textarea
+                    value={batchInput}
+                    onChange={(e) => setBatchInput(e.target.value)}
+                    placeholder={`customer_id\norder_amt\nuser_name\nmobile_no`}
+                    className="w-full h-32 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent resize-none font-mono"
+                  />
+                  <div className="flex items-center gap-3 mt-3">
+                    <button
+                      onClick={handleBatchSearch}
+                      className="px-4 py-2 bg-gradient-to-r from-violet-500 to-purple-600 text-white text-sm font-medium rounded-lg hover:from-violet-600 hover:to-purple-700 transition-all flex items-center gap-2"
+                    >
+                      <Search className="w-4 h-4" />
+                      智能匹配
+                    </button>
+                    <button
+                      onClick={() => {
+                        setBatchInput('');
+                        setBatchResults([]);
+                        setHasSearched(false);
+                      }}
+                      className="px-4 py-2 text-gray-600 text-sm font-medium rounded-lg hover:bg-gray-100 transition-colors"
+                    >
+                      清空
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex-1">
+                  <label className="text-sm font-medium text-gray-700 mb-2 block">
+                    匹配结果
+                  </label>
+                  <div className="h-32 border border-gray-200 rounded-lg overflow-y-auto bg-gray-50">
+                    {!hasSearched && (
+                      <div className="h-full flex items-center justify-center">
+                        <p className="text-xs text-gray-400">输入字段名后点击智能匹配</p>
+                      </div>
+                    )}
+                    {hasSearched && batchResults.length === 0 && (
+                      <div className="h-full flex items-center justify-center">
+                        <p className="text-xs text-gray-400">未找到匹配的标准</p>
+                      </div>
+                    )}
+                  </div>
+                  {hasSearched && batchResults.length > 0 && (
+                    <p className="text-xs text-gray-500 mt-2">
+                      共找到 {batchResults.length} 个推荐替换
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Results List */}
+              {hasSearched && batchResults.length > 0 && (
+                <div className="mt-5 border-t border-gray-100 pt-5">
+                  <h4 className="text-sm font-semibold text-gray-700 mb-4">推荐替换列表</h4>
+                  <div className="space-y-3 max-h-96 overflow-y-auto">
+                    {batchResults.map((result, index) => (
+                      <div
+                        key={index}
+                        className="p-4 bg-gray-50 rounded-lg border border-gray-100 hover:border-violet-200 transition-colors"
+                      >
+                        <div className="flex items-start gap-4">
+                          <div className="flex items-center gap-3 py-1">
+                            <span className="text-sm font-mono text-gray-700 font-medium">
+                              {result.fieldName}
+                            </span>
+                            <ArrowRight className="w-4 h-4 text-gray-400" />
+                            <span className="text-sm font-medium text-violet-700">
+                              {result.standard.nameCn}
+                            </span>
+                            <span className="text-xs text-gray-500 font-mono">
+                              ({result.standard.nameEn})
+                            </span>
+                          </div>
+                          <div className="flex-1" />
+                          <span
+                            className={cn(
+                              'text-xs px-2 py-1 rounded-full border',
+                              confidenceConfig[result.confidence].className
+                            )}
+                          >
+                            置信度 {confidenceConfig[result.confidence].label} (
+                            {(result.similarity * 100).toFixed(0)}%)
+                          </span>
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {result.matchReasons.map((reason, i) => (
+                            <span
+                              key={i}
+                              className="text-xs px-2 py-1 bg-white rounded border border-gray-200 text-gray-600"
+                            >
+                              {reason}
+                            </span>
+                          ))}
+                        </div>
+                        <div className="mt-3 flex items-center justify-between">
+                          <div className="flex items-center gap-3 text-xs text-gray-500">
+                            <span>数据类型：{result.standard.dataType}</span>
+                            <span>长度：{result.standard.dataLength || '-'}</span>
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() =>
+                                navigate(`/standards/${result.standard.id}`)
+                              }
+                              className="text-xs text-cyan-600 hover:text-cyan-700"
+                            >
+                              查看标准
+                            </button>
+                            {mappings.some(
+                              (m) =>
+                                m.fieldName.toLowerCase() ===
+                                  result.fieldName.toLowerCase() &&
+                                !m.standardId
+                            ) && (
+                              <button
+                                onClick={() => handleConfirmBatchMapping(result)}
+                                className="text-xs px-3 py-1 bg-emerald-500 text-white rounded hover:bg-emerald-600"
+                              >
+                                确认映射
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         <div className="flex gap-6">
           {/* Left - System List */}
           <div className="w-56 flex-shrink-0">
@@ -299,7 +555,15 @@ export function MappingPage() {
                     </button>
                   ))}
                 </div>
-                <button className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors">
+                <button
+                  onClick={() => {
+                    setSearchKeyword('');
+                    setFilterType('all');
+                    setSelectedSystem('全部系统');
+                  }}
+                  className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                  title="重置筛选"
+                >
                   <RefreshCw className="w-4 h-4" />
                 </button>
               </div>
@@ -322,6 +586,11 @@ export function MappingPage() {
                       {conflictMappings.map((m) => (
                         <MappingCard key={m.id} mapping={m} />
                       ))}
+                      {conflictMappings.length === 0 && (
+                        <div className="col-span-2 text-center py-8 text-gray-400 text-sm">
+                          暂无冲突字段
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -342,6 +611,11 @@ export function MappingPage() {
                       {unmappedMappings.map((m) => (
                         <MappingCard key={m.id} mapping={m} />
                       ))}
+                      {unmappedMappings.length === 0 && (
+                        <div className="col-span-2 text-center py-8 text-gray-400 text-sm">
+                          暂无不映射字段
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -362,6 +636,11 @@ export function MappingPage() {
                       {mappedMappings.map((m) => (
                         <MappingCard key={m.id} mapping={m} />
                       ))}
+                      {mappedMappings.length === 0 && (
+                        <div className="col-span-2 text-center py-8 text-gray-400 text-sm">
+                          暂无已映射字段
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

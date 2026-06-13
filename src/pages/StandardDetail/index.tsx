@@ -22,8 +22,15 @@ import { getMappingsByStandard } from '@/data/mappings';
 import { getAuditRecordsByStandard } from '@/data/audits';
 import { getReferencesByStandard, getReferenceCountByStandard } from '@/data/references';
 import { formatDateTime, formatFileSize } from '@/utils/export';
+import {
+  getAttachments,
+  addAttachment,
+  deleteAttachment,
+  downloadAttachment,
+} from '@/utils/attachmentStorage';
+import { useMappingStore } from '@/store/useMappingStore';
 import { cn } from '@/lib/utils';
-import { AllowedValue, DataType, DataStandard } from '@/types';
+import { AllowedValue, DataType, DataStandard, FieldMapping } from '@/types';
 
 type TabType = 'basic' | 'values' | 'example' | 'mapping' | 'audit';
 
@@ -35,13 +42,20 @@ export function StandardDetailPage() {
 
   const { getStandardById, addStandard, updateStandard, deleteStandard, submitForAudit } =
     useStandardStore();
+  const { getMappingsByStandard, confirmMapping, addMapping, searchMappings, mappings: allMappings } =
+    useMappingStore();
 
   const standard = isNew ? null : getStandardById(id || '');
   const [isEditing, setIsEditing] = useState(isNew);
   const [activeTab, setActiveTab] = useState<TabType>('basic');
+  const [showLinkModal, setShowLinkModal] = useState(false);
+  const [linkSearchKeyword, setLinkSearchKeyword] = useState('');
 
   const [formData, setFormData] = useState<DataStandard>(() => {
-    if (standard) return { ...standard };
+    if (standard) {
+      const savedAttachments = getAttachments(standard.id);
+      return { ...standard, attachments: savedAttachments.length > 0 ? savedAttachments : standard.attachments };
+    }
     return {
       id: 's' + Date.now(),
       nameCn: '',
@@ -63,7 +77,7 @@ export function StandardDetailPage() {
     };
   });
 
-  const mappings = standard ? getMappingsByStandard(standard.id) : [];
+  const mappings = getMappingsByStandard(formData.id);
   const auditRecords = standard ? getAuditRecordsByStandard(standard.id) : [];
   const references = standard ? getReferencesByStandard(standard.id) : [];
   const referenceCount = standard ? getReferenceCountByStandard(standard.id) : 0;
@@ -115,6 +129,46 @@ export function StandardDetailPage() {
       deleteStandard(id!);
       navigate('/');
     }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        try {
+          const newAtt = await addAttachment(formData.id, file);
+          setFormData({
+            ...formData,
+            attachments: [...formData.attachments, newAtt],
+          });
+        } catch (err) {
+          console.error('Failed to upload file:', err);
+          alert('文件上传失败');
+        }
+      }
+    }
+    e.target.value = '';
+  };
+
+  const handleDeleteAttachment = (attId: string) => {
+    if (confirm('确定删除该附件？')) {
+      deleteAttachment(formData.id, attId);
+      setFormData({
+        ...formData,
+        attachments: formData.attachments.filter((a) => a.id !== attId),
+      });
+    }
+  };
+
+  const handleDownloadAttachment = (attId: string) => {
+    downloadAttachment(formData.id, attId);
+  };
+
+  const handleLinkField = (mapping: FieldMapping) => {
+    confirmMapping(mapping.id, formData.id, formData.nameCn);
+    setShowLinkModal(false);
+    setLinkSearchKeyword('');
   };
 
   const addAllowedValue = () => {
@@ -540,9 +594,22 @@ export function StandardDetailPage() {
                             {formatFileSize(att.size)} · {formatDateTime(att.uploadedAt)}
                           </p>
                         </div>
-                        <button className="p-1.5 text-gray-400 hover:text-cyan-600 hover:bg-cyan-50 rounded transition-colors">
+                        <button
+                          onClick={() => handleDownloadAttachment(att.id)}
+                          className="p-1.5 text-gray-400 hover:text-cyan-600 hover:bg-cyan-50 rounded transition-colors"
+                          title="下载"
+                        >
                           <Download className="w-4 h-4" />
                         </button>
+                        {isEditing && (
+                          <button
+                            onClick={() => handleDeleteAttachment(att.id)}
+                            className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                            title="删除"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -553,7 +620,13 @@ export function StandardDetailPage() {
                         <Upload className="w-8 h-8 text-gray-400 mb-2" />
                         <p className="text-sm text-gray-500">点击上传或拖拽文件到此处</p>
                         <p className="text-xs text-gray-400 mt-1">支持 PDF、Word、Excel 格式，最大 10MB</p>
-                        <input type="file" className="hidden" />
+                        <input
+                          type="file"
+                          className="hidden"
+                          multiple
+                          onChange={handleFileUpload}
+                          accept=".pdf,.doc,.docx,.xls,.xlsx,.txt"
+                        />
                       </label>
                     </div>
                   )}
@@ -568,9 +641,18 @@ export function StandardDetailPage() {
               <div className="p-6">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-base font-semibold text-gray-800">映射的系统字段</h3>
-                  <span className="text-sm text-gray-500">
-                    共 <span className="font-medium text-cyan-600">{mappings.length}</span> 个映射
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-gray-500">
+                      共 <span className="font-medium text-cyan-600">{mappings.length}</span> 个映射
+                    </span>
+                    <button
+                      onClick={() => setShowLinkModal(true)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-gradient-to-r from-cyan-500 to-blue-500 rounded-lg hover:from-cyan-600 hover:to-blue-600 transition-all"
+                    >
+                      <Plus className="w-4 h-4" />
+                      关联字段
+                    </button>
+                  </div>
                 </div>
 
                 {mappings.length > 0 ? (
@@ -592,6 +674,19 @@ export function StandardDetailPage() {
                           </div>
                         </div>
                         <CheckCircle className="w-5 h-5 text-emerald-500" />
+                        {isEditing && (
+                          <button
+                            onClick={() => {
+                              if (confirm('确定解除该字段的映射关系？')) {
+                                useMappingStore.getState().unlinkMapping(mapping.id);
+                              }
+                            }}
+                            className="p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                            title="解除映射"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -600,7 +695,14 @@ export function StandardDetailPage() {
                     <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-4">
                       <FileText className="w-8 h-8 text-gray-300" />
                     </div>
-                    <p className="text-gray-500 text-sm">暂无字段映射</p>
+                    <p className="text-gray-500 text-sm mb-4">暂无字段映射</p>
+                    <button
+                      onClick={() => setShowLinkModal(true)}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-cyan-600 bg-cyan-50 rounded-lg hover:bg-cyan-100 transition-colors"
+                    >
+                      <Plus className="w-4 h-4" />
+                      关联系统字段
+                    </button>
                   </div>
                 )}
               </div>
@@ -666,6 +768,123 @@ export function StandardDetailPage() {
           )}
         </div>
       </div>
+
+      {/* Link Field Modal */}
+      {showLinkModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl mx-4 overflow-hidden max-h-[80vh] flex flex-col">
+            <div className="p-5 border-b border-gray-100 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-gray-900">关联系统字段</h3>
+              <button
+                onClick={() => {
+                  setShowLinkModal(false);
+                  setLinkSearchKeyword('');
+                }}
+                className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 border-b border-gray-100">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="搜索字段名、表名或系统名..."
+                  value={linkSearchKeyword}
+                  onChange={(e) => setLinkSearchKeyword(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2.5 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500/20 focus:border-cyan-500"
+                  autoFocus
+                />
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4">
+              {(() => {
+                const unlinkedMappings = allMappings.filter(
+                  (m) => m.standardId !== formData.id
+                );
+                const filtered = linkSearchKeyword
+                  ? unlinkedMappings.filter(
+                      (m) =>
+                        m.fieldName.toLowerCase().includes(linkSearchKeyword.toLowerCase()) ||
+                        m.tableName.toLowerCase().includes(linkSearchKeyword.toLowerCase()) ||
+                        m.systemName.toLowerCase().includes(linkSearchKeyword.toLowerCase())
+                    )
+                  : unlinkedMappings;
+
+                if (filtered.length === 0) {
+                  return (
+                    <div className="text-center py-12">
+                      <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-4">
+                        <Search className="w-8 h-8 text-gray-300" />
+                      </div>
+                      <p className="text-gray-500 text-sm">
+                        {linkSearchKeyword ? '没有找到匹配的字段' : '暂无可用的系统字段'}
+                      </p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="space-y-2">
+                    {filtered.map((mapping) => (
+                      <div
+                        key={mapping.id}
+                        className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <span className="font-mono text-sm font-medium text-gray-800">
+                              {mapping.fieldName}
+                            </span>
+                            {mapping.standardId && (
+                              <span className="text-xs text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
+                                已映射到其他标准
+                              </span>
+                            )}
+                            {mapping.mappingStatus === 'conflict' && (
+                              <span className="text-xs text-red-600 bg-red-50 px-1.5 py-0.5 rounded">
+                                冲突
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-3 text-xs text-gray-500">
+                            <span>{mapping.systemName}</span>
+                            <span>·</span>
+                            <span>{mapping.tableName}</span>
+                            <span>·</span>
+                            <span>{mapping.fieldType}</span>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleLinkField(mapping)}
+                          className="px-3 py-1.5 text-sm font-medium text-white bg-gradient-to-r from-cyan-500 to-blue-500 rounded-md hover:from-cyan-600 hover:to-blue-600 transition-all"
+                        >
+                          关联
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+
+            <div className="p-4 border-t border-gray-100 bg-gray-50 flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  setShowLinkModal(false);
+                  setLinkSearchKeyword('');
+                }}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
